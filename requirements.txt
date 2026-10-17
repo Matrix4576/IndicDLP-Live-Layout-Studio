@@ -1,0 +1,20 @@
+﻿# IndicDLP Live Layout Studio (app.py)
+# Tested on Windows 11, Python 3.14, NVIDIA RTX 5060 (CUDA 12.8). CPU-only machines work too, just slower.
+
+streamlit>=1.57          # tested with 1.64.0
+ultralytics>=8.3         # YOLOv10x weights (tested with 8.4.178)
+doclayout-yolo>=0.0.4    # DocLayout-YOLO weights
+ensemble-boxes>=1.0.9    # box fusion for the multi-scale boost and Ensemble Fusion
+huggingface_hub          # imported by doclayout-yolo
+pillow>=10
+numpy
+opencv-python
+
+# PyTorch is NOT listed on purpose: install the build that matches your hardware first, see README.md.
+#   NVIDIA GPU (CUDA 12.8):  pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+#   CPU only:                pip install torch torchvision
+
+# Optional, only for RoDLA (Linux, Python 3.8, CUDA): see rodla.yml and the main README.md
+#   mmcv-full==1.6.0
+#   mmdet==2.28.1
+
