@@ -16,3 +16,6 @@ RoDLA/model/ops_dcnv3/dist/
 *.so
 *.o
 *.whl
+
+# Claude Code local settings
+.claude/settings.local.json
