@@ -1,5 +1,5 @@
 ﻿# IndicDLP Live Layout Studio (app.py)
-# Tested on Windows 11, Python 3.14, NVIDIA RTX 5060 (CUDA 12.8). CPU-only machines work too, just slower.
+# Python 3.10 or newer. CPU-only machines work too, just slower.
 
 streamlit>=1.57          # tested with 1.64.0
 ultralytics>=8.3         # YOLOv10x weights (tested with 8.4.178)

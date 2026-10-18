@@ -4,8 +4,6 @@
 
 ### An interactive, multilingual system for document layout parsing of Indic and English pages, with multi-scale inference and ensemble fusion of deep detectors
 
-**Rajdip Dhar** · [GitHub: RajdipDhar2007](https://github.com/RajdipDhar2007) · rajdipdharcode@gmail.com
-
 </div>
 
 ---
@@ -46,7 +44,7 @@ weighted boxes fusion, multilingual user interface, Streamlit.
 8. [Installation and usage](#8-installation-and-usage)
 9. [Limitations and future work](#9-limitations-and-future-work)
 10. [Project structure](#10-project-structure)
-11. [References and licence](#11-references-and-licence)
+11. [References](#11-references)
 
 ---
 
@@ -503,6 +501,34 @@ and comparing the result tabs.
 
 ## 8. Installation and usage
 
+### Guide for evaluators
+
+This section is the fastest route to a working demo.
+
+1. **What to expect.** A web app that detects layout regions on a document page with up to three models, fuses
+   their outputs, and shows labels in 12 languages. It runs in a browser at `http://localhost:8501`.
+2. **Minimum setup (about 10 minutes plus downloads).** Follow the Quick start below. Only YOLOv10x and
+   DocLayout-YOLO are needed; they run on a normal laptop, with or without a GPU.
+3. **Weights.** About 225 MB for the two YOLO models. The app downloads them with one click on first launch.
+4. **Try it.** Choose *Sample gallery*, pick a page, press *Scan & detect*, then switch the *Region names* language.
+5. **RoDLA is optional.** It needs a Linux machine with a compatible NVIDIA GPU and a long build. Without it the app
+   works fully and marks RoDLA as unavailable. Its published results are in [Section 7](#7-experiments-and-results).
+6. **If something fails,** see [Troubleshooting](#step-10-troubleshooting).
+
+### Quick start (YOLOv10x and DocLayout-YOLO)
+
+```powershell
+git clone <repository-url>
+cd <project-folder>
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1          # Linux/macOS: source .venv/bin/activate
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128   # CPU only: pip install torch torchvision
+pip install -r requirements.txt
+python -m streamlit run app.py        # then open http://localhost:8501 and click "Download weights"
+```
+
+The detailed steps follow. RoDLA is optional and needs a separate Linux setup, see [Optional: RoDLA](#optional-rodla).
+
 ### Step 1: What you need
 
 - **Git** ([download](https://git-scm.com/downloads))
@@ -522,11 +548,12 @@ python --version
 ### Step 2: Clone the repository
 
 ```bash
-git clone https://github.com/RajdipDhar2007/IndicDLP-Live-Layout-Studio.git
-cd IndicDLP-Live-Layout-Studio
+git clone <repository-url>
+cd <project-folder>
 ```
 
-> Replace the URL with the address of your own copy of this repository if it is named differently.
+> Replace `<repository-url>` with the address of this repository and `<project-folder>` with the folder name that
+> `git clone` creates.
 
 All the following commands are run **from inside this project folder**.
 
@@ -612,8 +639,8 @@ while ((-not (Test-Path $f)) -or (Get-Item $f).Length -lt 4110731465) {
 }
 ```
 
-All three checkpoints were verified on Windows 11 with an RTX 5060: the two YOLO models load and detect, and the RoDLA
-checkpoint opens intact (1,434 tensors, 342M parameters, 42 classes). RoDLA inference itself still needs the Linux setup below.
+All three checkpoints were checked: the two YOLO models load and detect, and the RoDLA checkpoint opens intact
+(1,434 tensors, 342M parameters, 42 classes). RoDLA inference itself needs the Linux setup below.
 
 ### Step 7: Run the app
 
@@ -664,20 +691,79 @@ To stop the app, press `Ctrl + C` in the terminal.
 | No GPU found | The app falls back to the CPU automatically. The sidebar shows the device in use. |
 | Port 8501 already in use | `python -m streamlit run app.py --server.port 8502` |
 | Indic labels show as empty squares | Your system needs an Indic-capable font (Windows has *Nirmala UI* built in). |
-| RoDLA shows as unavailable | Expected on Windows, see [Optional: RoDLA](#optional-rodla). |
+| RoDLA shows as unavailable, or `No module named 'mmcv'` | Expected on Windows, and on very new GPU generations. See [Optional: RoDLA](#optional-rodla) for the Linux setup. |
+| `ModuleNotFoundError` for `ultralytics` or `streamlit` inside the RoDLA environment | Run `pip install streamlit ensemble-boxes pillow numpy opencv-python` there (step 4 of the RoDLA setup). |
+
+### Setup summary for each model
+
+| Model | Needs | Works on | Setup |
+|---|---|---|---|
+| YOLOv10x | `ultralytics` + PyTorch | Windows, Linux, macOS; GPU or CPU | Steps 4 to 6 (weights: `md2_PT_indicdlp_FT.pt`) |
+| DocLayout-YOLO | `doclayout-yolo` + PyTorch | Windows, Linux, macOS; GPU or CPU | Steps 4 to 6 (weights: `doclayout_yolo_indicdlp.pt`) |
+| RoDLA (optional) | Python 3.8, PyTorch 2.0.1 + CUDA 11.8, `mmcv-full==1.6.0`, `mmdet==2.28.1`, compiled DCNv3 ops | Linux or WSL2 with an NVIDIA GPU | [Optional: RoDLA](#optional-rodla) |
+
+YOLOv10x and DocLayout-YOLO share one environment (steps 3 to 5). RoDLA needs its **own, separate** environment because
+its pinned versions conflict with the modern PyTorch used above. The app is run from whichever environment has the
+packages for the models you want.
 
 ### Optional: RoDLA
 
-RoDLA needs `mmcv-full==1.6.0`, `mmdet==2.28.1` and compiled DCNv3 CUDA operators. These do not build on Windows with a
-recent Python, so the app shows RoDLA as unavailable there and skips it automatically. To use it, set up a
-**Linux (or WSL2) machine with an NVIDIA GPU**:
+**Why it is optional.** RoDLA is built on old, pinned code (`mmcv-full==1.6.0`, `mmdet==2.28.1`, PyTorch 2.0.1) and on
+InternImage's DCNv3 CUDA operators, which must be compiled on your machine. None of this installs on a recent Python
+(3.14 has no builds), and it is hard to compile on Windows. If `mmcv` / `mmdet` are missing, the app shows RoDLA as
+unavailable and the other models keep working. If the log says `No module named 'mmcv'`, this is the cause.
 
-1. Create the environment: `conda env create -f rodla.yml && conda activate rodla`
-2. Install the extra packages and compile the operators (`mmcv`, `ocrodeg`, `detectron2`, `RoDLA/model/ops_dcnv3`),
-   following the *RoDLA* instructions in the [RoDLA repository](https://github.com/yufanchen96/RoDLA).
-3. Download the 4.1 GB checkpoint into `weights/`:
-   `curl -L -C - -o weights/rodla_internimage_xl_indicdlp.pth "https://zenodo.org/records/15881917/files/rodla_internimage_xl_indicdlp.pth?download=1"`
-4. In the same environment, repeat steps 5 to 7 above. The RoDLA toggle then switches on by itself.
+**GPU compatibility.** PyTorch 2.0.1 with CUDA 11.8 only supports NVIDIA GPU generations up to Ada (compute capability
+8.9). Newer generations need a newer PyTorch, which this RoDLA code does not support. Use an older supported GPU or a
+cloud GPU (Colab, Kaggle, a cloud VM) for RoDLA. YOLOv10x and DocLayout-YOLO have no such limit.
+
+**Requirements.** Linux (or WSL2 on Windows with an NVIDIA driver), an NVIDIA GPU of the supported kind above, the CUDA 11.8
+toolkit (`nvcc`) for compiling, `gcc`/`g++`, and about 10 GB of free disk space.
+
+**Setup steps** (run from the project folder):
+
+```bash
+# 1. Separate environment with the pinned versions
+conda env create -f rodla.yml
+conda activate rodla
+
+# 2. MMCV / MMDetection stack and RoDLA's extra packages
+pip install -U openmim
+mim install mmcv-full==1.6.0
+pip install mmdet==2.28.1
+pip install -r RoDLA/requirements.txt
+
+# 3. Compile the DCNv3 CUDA operators (needs nvcc and a visible GPU)
+cd RoDLA/model/ops_dcnv3
+sh ./make.sh
+cd ../../..
+
+# 4. App dependencies (Streamlit etc.), without reinstalling PyTorch
+pip install streamlit ensemble-boxes pillow numpy opencv-python
+
+# 5. RoDLA checkpoint (4.1 GB, resumable)
+mkdir -p weights
+curl -L -C - -o weights/rodla_internimage_xl_indicdlp.pth \
+  "https://zenodo.org/records/15881917/files/rodla_internimage_xl_indicdlp.pth?download=1"
+
+# 6. Run the app
+python -m streamlit run app.py
+```
+
+Other upstream packages (`ocrodeg`, `detectron2`) are described in the
+[RoDLA repository](https://github.com/yufanchen96/RoDLA); install them if an import error names them.
+If `pip` of the conda environment pulls in an incompatible `numpy` or `opencv-python`, pin `numpy<2`.
+
+**Check it worked.** The sidebar shows the RoDLA toggle enabled, and this prints no error:
+
+```bash
+python -c "import mmcv, mmdet; print(mmcv.__version__, mmdet.__version__)"
+```
+
+Expected output: `1.6.0 2.28.1`.
+
+**CPU only.** Not supported out of the box. The DCNv3 operators need CUDA, and an InternImage-XL model is far too slow
+on a CPU to be practical.
 
 ---
 
@@ -720,13 +806,10 @@ recent Python, so the app shows RoDLA as unavailable there and skips it automati
 | `data/examples/`, `fig/images/` | Sample pages for the gallery |
 | `RoDLA/`, `doclayout-yolo/` | Model code needed to run RoDLA and DocLayout-YOLO |
 | `rodla.yml` | Conda environment for the optional RoDLA setup |
-| `LICENCE` | MIT licence (Rajdip Dhar) for the original files, with a scope note for third-party code |
-
-The web application (`app.py`, `i18n.py`, `requirements.txt` and this README) is the work of Rajdip Dhar.
 
 ---
 
-## 11. References and licence
+## 11. References
 
 ### 11.1 Libraries
 
@@ -743,13 +826,3 @@ The web application (`app.py`, `i18n.py`, `requirements.txt` and this README) is
    CVPR 2024.
 4. R. Solovyev, W. Wang, T. Gabruseva. *Weighted Boxes Fusion: Ensembling boxes from different object detection
    models.* Image and Vision Computing, 2021.
-
-### 11.3 Licence
-
-Released under the **MIT Licence**, Copyright (c) 2026 Rajdip Dhar, see [`LICENCE`](LICENCE). This covers the original
-files of this project (`app.py`, `i18n.py` and the documentation). Bundled third-party code, model weights and
-datasets keep their own licences and terms.
-
-### 11.4 Contact
-
-**Rajdip Dhar** · [GitHub: RajdipDhar2007](https://github.com/RajdipDhar2007) · rajdipdharcode@gmail.com

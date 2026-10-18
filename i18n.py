@@ -1,7 +1,5 @@
 """Localised names for the 42 IndicDLP region classes (English + 11 Indic languages).
 
-Author: Rajdip Dhar. MIT licence, see LICENCE.
-
 Translations are written for UI display only; they are concise, conventional document-layout
 terms and should be reviewed by a native speaker before any formal use.
 """

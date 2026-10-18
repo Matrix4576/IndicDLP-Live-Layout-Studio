@@ -1,7 +1,5 @@
 """IndicDLP Live Layout Studio.
 
-Author: Rajdip Dhar. MIT licence, see LICENCE.
-
 Upload a document page, watch a scan sweep over it, then see every IndicDLP model detect
 layout regions one box at a time, live in the browser. Region names can be shown in English
 or any of 11 Indic languages, and models can be fused for higher recall.
