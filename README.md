@@ -601,6 +601,20 @@ On Windows PowerShell, use `curl.exe` instead of `curl`, and `New-Item -ItemType
 `-C -` resumes an interrupted download. Zenodo can be slow, so be patient. The app ignores partly downloaded files,
 so an unfinished download will not crash it.
 
+The 4.1 GB RoDLA file often drops the connection part-way (`curl: (18)` or `(28)`). Just run the same command again, or
+use this PowerShell loop, which keeps resuming until the file reaches its full size of 4,110,731,465 bytes:
+
+```powershell
+$f = "weights/rodla_internimage_xl_indicdlp.pth"
+while ((-not (Test-Path $f)) -or (Get-Item $f).Length -lt 4110731465) {
+  curl.exe -L -C - -s -S --connect-timeout 30 --speed-time 60 --speed-limit 1000 -o $f "https://zenodo.org/records/15881917/files/rodla_internimage_xl_indicdlp.pth?download=1"
+  Start-Sleep -Seconds 3
+}
+```
+
+All three checkpoints were verified on Windows 11 with an RTX 5060: the two YOLO models load and detect, and the RoDLA
+checkpoint opens intact (1,434 tensors, 342M parameters, 42 classes). RoDLA inference itself still needs the Linux setup below.
+
 ### Step 7: Run the app
 
 ```bash
