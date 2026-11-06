@@ -21,7 +21,10 @@ def upscaledOCR(image: GrayImage) -> GrayImage:
     model_path = data_dir / "ESPCN_x2.pb"
     if not model_path.is_file():
         raise FileNotFoundError(f"Super-resolution model not found: {model_path}")
-    sr = cv.dnn_superres.DnnSuperResImpl.create()
+    dnn_superres = getattr(cv, "dnn_superres", None)
+    if dnn_superres is None:
+        raise RuntimeError("OpenCV dnn_superres module is unavailable; install opencv-contrib-python")
+    sr = dnn_superres.DnnSuperResImpl.create()
     sr.readModel(str(model_path))
     sr.setModel("espcn", 2)
     upscaled = sr.upsample(image)

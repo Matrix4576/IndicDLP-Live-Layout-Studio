@@ -1,9 +1,12 @@
-import os
+import argparse
 from pathlib import Path
+
 import cv2 as cv
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 import numpy as np
 import numpy.typing as npt
+
 from preprocessing import downscaledSegmentation
 
 PARENT_DIR = Path(__file__).parent
@@ -11,10 +14,33 @@ DATA_DIR = PARENT_DIR / "data"
 TRAIN_DIR = DATA_DIR / "train"
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Inspect whitespace segmentation candidates on training scans."
+    )
+    parser.add_argument(
+        "--min-gap-height",
+        type=int,
+        default=12,
+        help="Minimum consecutive low-ink rows to mark as a candidate gap (pixels).",
+    )
+    parser.add_argument(
+        "--max-gap-density",
+        type=float,
+        default=0.03,
+        help="Maximum ink fraction for a row to count as low ink (0 to 1).",
+    )
+    return parser.parse_args()
+
+
 def grayToBinary(grayIMG: cv.typing.MatLike) -> tuple[float, cv.typing.MatLike]:
     """
     Convert a grayscale image to an inverted binary image for ink analysis.
     """
+    if not isinstance(grayIMG, np.ndarray) or grayIMG.dtype != np.uint8:
+        raise TypeError("grayIMG must be a NumPy array with dtype uint8")
+    if grayIMG.ndim != 2 or grayIMG.size == 0:
+        raise ValueError("grayIMG must be a non-empty grayscale image")
     threshold_value = 127
     max_value = 255
     threshold, binary_image = cv.threshold (
@@ -63,98 +89,171 @@ def weighted_minima_threshold (
     return selected_minima, threshold
 
 
-image_files = sorted(os.listdir(TRAIN_DIR))
-colors = plt.get_cmap("tab10")
+def candidate_regions(
+    width: int, x_cuts: npt.NDArray[np.intp]
+) -> list[tuple[int, int]]:
+    """Split the page at interior X minima into half-open column regions."""
+    if width <= 0:
+        raise ValueError("width must be positive")
+    cuts = np.unique(x_cuts[(x_cuts > 0) & (x_cuts < width)]).astype(int)
+    edges = np.concatenate(([0], cuts, [width]))
+    return [(int(left), int(right)) for left, right in zip(edges[:-1], edges[1:])]
 
-for image_file in image_files:
-    image_path = TRAIN_DIR / image_file
-    img: cv.typing.MatLike | None = cv.imread(str(image_path), cv.IMREAD_GRAYSCALE)
-    if img is None:
-        continue
 
-    downscaled_sample = downscaledSegmentation(img.astype(np.uint8, copy=False))
-    _, binary_image = grayToBinary(downscaled_sample)
-    height, width = binary_image.shape[:2]
+def low_ink_row_runs(
+    binary_region: npt.NDArray[np.uint8],
+    max_gap_density: float,
+    min_gap_height: int,
+) -> tuple[npt.NDArray[np.float64], list[tuple[int, int]]]:
+    """Return a region's horizontal profile and qualifying [top, bottom) gaps."""
+    if not isinstance(binary_region, np.ndarray) or binary_region.dtype != np.uint8:
+        raise TypeError("binary_region must be a NumPy array with dtype uint8")
+    if binary_region.ndim != 2 or binary_region.size == 0:
+        raise ValueError("binary_region must be a non-empty grayscale region")
+    if not 0.0 <= max_gap_density <= 1.0:
+        raise ValueError("max_gap_density must be between 0 and 1")
+    if min_gap_height < 1:
+        raise ValueError("min_gap_height must be at least 1")
 
-    ink_density_x = binary_image.sum(axis=0) / (255 * height)
-    ink_density_y = binary_image.sum(axis=1) / (255 * width)
-    # A gentler inverse weight on X keeps very low scan-edge minima from
-    # pulling the cutoff down as strongly, while still favoring deeper valleys.
-    x_minima, x_threshold = weighted_minima_threshold(
-        ink_density_x, weight_exponent=0.85
-    )
-    y_minima, y_threshold = weighted_minima_threshold(ink_density_y)
+    profile = binary_region.astype(np.float64).mean(axis=1) / 255.0
+    is_low_ink = profile <= max_gap_density
+    transitions = np.diff(np.pad(is_low_ink.astype(np.int8), (1, 1)))
+    starts = np.flatnonzero(transitions == 1)
+    ends = np.flatnonzero(transitions == -1)
+    runs = [
+        (int(start), int(end))
+        for start, end in zip(starts, ends)
+        if end - start >= min_gap_height
+    ]
+    return profile, runs
 
-    annotated_bgr = cv.cvtColor(downscaled_sample, cv.COLOR_GRAY2BGR)
-    fig, axes = plt.subplots(1, 3, figsize=(18, 7))
-    axes[0].imshow(cv.cvtColor(annotated_bgr, cv.COLOR_BGR2RGB))
-    axes[0].set_title("Image with weighted-minimum lines")
-    axes[0].set_xlabel("X coordinate")
-    axes[0].set_ylabel("Y coordinate")
 
-    x_candidates = find_local_minima(ink_density_x)
-    axes[1].plot(ink_density_x, color="steelblue", linewidth=0.8, label="Profile")
-    axes[1].scatter(
-        x_candidates,
-        ink_density_x[x_candidates],
-        color="gray",
-        s=13,
-        label="Local minima",
-        zorder=3,
-    )
-    axes[1].set_title(
-        "Vertical Projection Profile (X)"
-        if x_threshold is None
-        else f"Vertical Projection Profile (X), threshold={x_threshold:.3f}"
-    )
-    axes[1].set_xlabel("X coordinate")
-    axes[1].set_ylabel("Ink density")
-    axes[1].grid(True)
-    axes[1].legend(loc="upper right", fontsize="small")
-    if x_threshold is not None:
-        axes[1].axhline(x_threshold, color="black", linestyle=":", linewidth=1)
+def inspect_images(min_gap_height: int, max_gap_density: float) -> None:
+    colors = plt.get_cmap("tab10")
+    image_files = sorted(path for path in TRAIN_DIR.iterdir() if path.is_file())
 
-    y_candidates = find_local_minima(ink_density_y)
-    axes[2].plot(ink_density_y, color="steelblue", linewidth=0.8, label="Profile")
-    axes[2].scatter(
-        y_candidates,
-        ink_density_y[y_candidates],
-        color="gray",
-        s=13,
-        label="Local minima",
-        zorder=3,
-    )
-    axes[2].set_title(
-        "Horizontal Projection Profile (Y)"
-        if y_threshold is None
-        else f"Horizontal Projection Profile (Y), threshold={y_threshold:.3f}"
-    )
-    axes[2].set_xlabel("Y coordinate")
-    axes[2].set_ylabel("Ink density")
-    axes[2].grid(True)
-    axes[2].legend(loc="upper right", fontsize="small")
-    if y_threshold is not None:
-        axes[2].axhline(y_threshold, color="black", linestyle=":", linewidth=1)
+    for image_path in image_files:
+        img: cv.typing.MatLike | None = cv.imread(str(image_path), cv.IMREAD_GRAYSCALE)
+        if img is None or img.size == 0:
+            continue
+        downscaled_sample = downscaledSegmentation(img.astype(np.uint8, copy=False))
+        _, binary_image = grayToBinary(downscaled_sample)
+        height, width = binary_image.shape
+        ink_density_x = binary_image.astype(np.float64).sum(axis=0) / (255.0 * height)
+        x_minima, x_threshold = weighted_minima_threshold(
+            ink_density_x, weight_exponent=0.85
+        )
+        regions = candidate_regions(width, x_minima)
+        local_profiles = [
+            (
+                left,
+                right,
+                *low_ink_row_runs(
+                    binary_image[:, left:right], max_gap_density, min_gap_height # type: ignore
+                ),
+            )
+            for left, right in regions
+        ]
 
-    for idx, x_coord_value in enumerate(x_minima):
-        x_coord = int(x_coord_value)
-        color = colors(idx % 10)
-        bgr_color = tuple(int(channel * 255) for channel in color[2::-1])
-        cv.line(annotated_bgr, (x_coord, 0), (x_coord, height - 1), bgr_color, 2)
-        axes[1].axvline(x_coord, color=color, linestyle="--", linewidth=1.4)
-        axes[1].plot(x_coord, ink_density_x[x_coord], "o", color=color)
+        overlay_height = min(16, max(8, 12 * height / width))
+        image_fig, image_ax = plt.subplots(figsize=(12, overlay_height))
+        image_ax.imshow(downscaled_sample, cmap="gray", vmin=0, vmax=255)
+        image_ax.set_title("X regions and region-local gap candidates")
+        image_ax.set_xlabel("X coordinate")
+        image_ax.set_ylabel("Y coordinate")
 
-    for idx, y_coord_value in enumerate(y_minima):
-        y_coord = int(y_coord_value)
-        color = colors((idx + 5) % 10)
-        bgr_color = tuple(int(channel * 255) for channel in color[2::-1])
-        cv.line(annotated_bgr, (0, y_coord), (width - 1, y_coord), bgr_color, 2)
-        axes[2].axvline(y_coord, color=color, linestyle="--", linewidth=1.4)
-        axes[2].plot(y_coord, ink_density_y[y_coord], "o", color=color)
+        chart_fig, (x_ax, y_ax) = plt.subplots(1, 2, figsize=(16, 7))
 
-    axes[0].images[0].set_data(cv.cvtColor(annotated_bgr, cv.COLOR_BGR2RGB))
-    plt.suptitle(
-        f"{image_file} - selected minima: X={len(x_minima)}, Y={len(y_minima)}"
-    )
-    plt.tight_layout()
-    plt.show()
+        x_candidates = find_local_minima(ink_density_x)
+        x_ax.plot(ink_density_x, color="steelblue", linewidth=0.8, label="Profile")
+        x_ax.scatter(
+            x_candidates,
+            ink_density_x[x_candidates],
+            color="gray",
+            s=13,
+            label="Local minima",
+            zorder=3,
+        )
+        x_ax.set_title(
+            "Vertical Projection Profile (X)"
+            if x_threshold is None
+            else f"Vertical Projection Profile (X), threshold={x_threshold:.3f}"
+        )
+        x_ax.set_xlabel("X coordinate")
+        x_ax.set_ylabel("Ink density")
+        x_ax.grid(True)
+        x_ax.legend(loc="upper right", fontsize="small")
+        if x_threshold is not None:
+            x_ax.axhline(x_threshold, color="black", linestyle=":", linewidth=1)
+
+        y_ax.set_title(
+            f"Region-local horizontal profiles (minimum gap {min_gap_height}px)"
+        )
+        y_ax.set_xlabel("Ink density")
+        y_ax.set_ylabel("Y coordinate")
+        y_ax.set_xlim(0, 1)
+        y_ax.set_ylim(height - 1, 0)
+        y_ax.grid(True)
+
+        for idx, (left, right, profile, gaps) in enumerate(local_profiles):
+            color = colors(idx % 10)
+            label = f"Region {idx + 1} ({left}:{right})"
+            y_ax.plot(profile, np.arange(height), color=color, linewidth=0.9, label=label)
+            for top, bottom in gaps:
+                y_ax.axhspan(top, bottom, color=color, alpha=0.14)
+                image_ax.add_patch(
+                    Rectangle(
+                        (left, top),
+                        right - left,
+                        bottom - top,
+                        facecolor=color,
+                        edgecolor=color,
+                        alpha=0.22,
+                        linewidth=1.5,
+                    )
+                )
+                image_ax.plot([left, right - 1], [top, top], color=color, linewidth=1.5)
+                image_ax.plot(
+                    [left, right - 1], [bottom - 1, bottom - 1], color=color, linewidth=1.5
+                )
+            image_ax.add_patch(
+                Rectangle(
+                    (left, 0),
+                    max(1, right - left - 1),
+                    height - 1,
+                    fill=False,
+                    edgecolor=color,
+                    linewidth=1.0,
+                    linestyle="--",
+                )
+            )
+
+        for x_coord_value in x_minima:
+            x_coord = int(x_coord_value)
+            image_ax.axvline(x_coord, color="red", linewidth=1.5, linestyle=":")
+            x_ax.axvline(x_coord, color="red", linestyle="--", linewidth=1.2)
+            x_ax.plot(x_coord, ink_density_x[x_coord], "o", color="red")
+
+        y_ax.axvline(
+            max_gap_density,
+            color="black",
+            linestyle=":",
+            linewidth=1,
+            label=f"Gap density limit ({max_gap_density:.3f})",
+        )
+        y_ax.legend(loc="upper right", fontsize="x-small")
+        image_fig.suptitle(
+            f"{image_path.name} - X cuts: {len(x_minima)}, regions: {len(regions)}"
+        )
+        image_fig.tight_layout()
+        chart_fig.tight_layout()
+        plt.show()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    if args.min_gap_height < 1:
+        raise SystemExit("--min-gap-height must be at least 1")
+    if not 0.0 <= args.max_gap_density <= 1.0:
+        raise SystemExit("--max-gap-density must be between 0 and 1")
+    inspect_images(args.min_gap_height, args.max_gap_density)
