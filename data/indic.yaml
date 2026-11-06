@@ -1,8 +1,9 @@
 #path: ../root/
 
-train: /home/sahithi_kukkala/gr2html/GRtoHTML/data/inputs/sample_indic/images/train
-val: /home/sahithi_kukkala/gr2html/GRtoHTML/data/inputs/sample_indic/images/val
-test: /ssd_scratch/sahithi/indic_data/images/test
+path: ../datasets/indic
+train: images/train
+val: images/val
+test: images/test
 names:
   0: 'advertisement'
   1: 'answer'

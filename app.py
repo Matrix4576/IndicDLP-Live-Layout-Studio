@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import base64
 import collections
+import hashlib
 import io
 import json
-import sys
+import math
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -20,14 +21,15 @@ from html import escape
 from pathlib import Path
 
 import streamlit as st
+import cv2
 from PIL import Image, ImageDraw, ImageFont
 
 from i18n import LANGS, label as tr
 
 ROOT = Path(__file__).resolve().parent
 WEIGHTS = ROOT / "weights"
+ESPCN_MODEL = ROOT / "ESPCN_x2.pb"
 EXAMPLE_DIRS = [ROOT / "data" / "examples", ROOT / "fig" / "images"]
-RODLA_DIR = ROOT / "RoDLA" / "model"
 ZENODO = "https://zenodo.org/records/15881917/files/{}?download=1"
 DEFAULTS = dict(conf=0.25, iou=0.70, imgsz=1024, speed="Normal", boost=True, fuse=True, lang="en")
 
@@ -43,7 +45,7 @@ class ModelSpec:
     title: str
     blurb: str
     file: str
-    kind: str  # "yolo" | "doclayout" | "rodla" | "fusion"
+    kind: str  # "yolo" | "doclayout" | "fusion"
     map: str
     icon: str
     size: int  # expected file size in bytes, used to reject partial downloads
@@ -54,8 +56,6 @@ MODELS = {
                           "md2_PT_indicdlp_FT.pt", "yolo", "57.7", "⚡", 64280114),
     "doclayout": ModelSpec("doclayout", "DocLayout-YOLO", "Document-specialised YOLOv10 variant with global-to-local perception.",
                            "doclayout_yolo_indicdlp.pt", "doclayout", "54.5", "🧭", 161475350),
-    "rodla": ModelSpec("rodla", "RoDLA", "Robust InternImage-XL + DINO detector built for degraded documents.",
-                       "rodla_internimage_xl_indicdlp.pth", "rodla", "53.1", "🛡️", 4110731465),
 }
 FUSION = ModelSpec("fusion", "Ensemble Fusion", "All models voting together: boxes from every model merged with weighted box fusion.",
                    "", "fusion", "-", "🧬", 0)
@@ -119,21 +119,7 @@ def device_name() -> str:
         return "cpu"
 
 
-def rodla_available() -> tuple[bool, str]:
-    try:
-        import mmcv  # noqa: F401
-        import mmdet  # noqa: F401
-    except Exception:
-        return False, ("RoDLA needs `mmcv-full==1.6.0`, `mmdet==2.28.1` and compiled DCNv3 CUDA ops "
-                       "(Python 3.8 + Linux/CUDA, see `rodla.yml`). They are not installed here, so this model is skipped.")
-    if not (WEIGHTS / MODELS["rodla"].file).exists():
-        return False, "RoDLA checkpoint (≈4 GB) is not in `weights/` yet."
-    return True, ""
-
-
 def model_status(spec: ModelSpec) -> tuple[bool, str]:
-    if spec.kind == "rodla":
-        return rodla_available()
     path = WEIGHTS / spec.file
     if not path.exists():
         return False, "Weights not downloaded."
@@ -155,11 +141,7 @@ def load_model(key: str, device: str):
     if spec.kind == "doclayout":
         from doclayout_yolo import YOLOv10
         return YOLOv10(path)
-    sys.path.insert(0, str(RODLA_DIR))
-    import mmcv_custom  # noqa: F401
-    import mmdet_custom  # noqa: F401
-    from mmdet.apis import init_detector
-    return init_detector(str(RODLA_DIR / "configs/indic/rodla_internimage_xl_indic.py"), path, device=device)
+    raise ValueError(f"Unsupported model type: {spec.kind}")
 
 
 def predict_once(key: str, image: Image.Image, conf: float, iou: float, imgsz: int, device: str) -> list[dict]:
@@ -171,18 +153,9 @@ def predict_once(key: str, image: Image.Image, conf: float, iou: float, imgsz: i
         bgr = np.ascontiguousarray(np.array(image.convert("RGB"))[:, :, ::-1])  # ultralytics expects BGR arrays
         res = list(model.predict(bgr, imgsz=imgsz, conf=conf, iou=iou,
                                  device=0 if device.startswith("cuda") else "cpu", verbose=False))[0]
-        names = res.names
-        for (x1, y1, x2, y2), c, k in zip(res.boxes.xyxy.tolist(), res.boxes.conf.tolist(), res.boxes.cls.tolist()):
+        names = res.names #type: ignore
+        for (x1, y1, x2, y2), c, k in zip(res.boxes.xyxy.tolist(), res.boxes.conf.tolist(), res.boxes.cls.tolist()): #type: ignore
             dets.append(dict(box=(x1, y1, x2, y2), conf=float(c), cls=int(k), label=names[int(k)]))
-    else:
-        import numpy as np
-        from mmdet.apis import inference_detector
-        out = inference_detector(model, np.array(image.convert("RGB"))[:, :, ::-1])
-        bbox_res = out[0] if isinstance(out, tuple) else out
-        for k, arr in enumerate(bbox_res):
-            for x1, y1, x2, y2, c in arr:
-                if c >= conf:
-                    dets.append(dict(box=(x1, y1, x2, y2), conf=float(c), cls=k, label=model.CLASSES[k]))
     return dets
 
 
@@ -210,7 +183,7 @@ def reading_order(dets: list[dict]) -> list[dict]:
 def run_model(key: str, image: Image.Image, cfg: dict, device: str) -> tuple[list[dict], float]:
     t0 = time.perf_counter()
     scales = [cfg["imgsz"]]
-    if cfg["boost"] and MODELS[key].kind != "rodla":
+    if cfg["boost"]:
         scales.append(1280 if cfg["imgsz"] < 1280 else 1024)  # a second scale recovers small / faint regions
     passes = [predict_once(key, image, cfg["conf"], cfg["iou"], s, device) for s in scales]
     dets = fuse(passes, image.size, cfg["conf"], 0.6) if len(passes) > 1 else passes[0]
@@ -261,6 +234,54 @@ def annotate_png(image: Image.Image, dets: list[dict]) -> Image.Image:
         d.rectangle([x1, ty, x1 + tw + 10, ty + th], fill=col + (235,))
         d.text((x1 + 5, ty + 2), text, fill=(10, 10, 20, 255), font=font)
     return Image.alpha_composite(base, overlay).convert("RGB")
+
+
+def crop_bounds(image: Image.Image, box: tuple[float, float, float, float]) -> tuple[int, int, int, int] | None:
+    """Round a valid xyxy box outward, clamp it to the source image, and reject empty boxes."""
+    try:
+        x1, y1, x2, y2 = (float(v) for v in box)
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(v) for v in (x1, y1, x2, y2)) or x2 <= x1 or y2 <= y1:
+        return None
+    left = max(0, min(image.width, math.floor(x1)))
+    top = max(0, min(image.height, math.floor(y1)))
+    right = max(0, min(image.width, math.ceil(x2)))
+    bottom = max(0, min(image.height, math.ceil(y2)))
+    return (left, top, right, bottom) if right > left and bottom > top else None
+
+
+def image_fingerprint(image: Image.Image) -> str:
+    """Identify image content so same-name, same-size uploads do not reuse stale results."""
+    digest = hashlib.sha256()
+    digest.update(f"{image.mode}:{image.size}".encode("ascii"))
+    digest.update(image.tobytes())
+    return digest.hexdigest()
+
+
+@st.cache_resource(show_spinner=False)
+def load_espcn():
+    """Load the ESPCN x2 model once for the app session."""
+    if not ESPCN_MODEL.is_file():
+        raise FileNotFoundError(f"ESPCN model not found: {ESPCN_MODEL.name}")
+    if not hasattr(cv2, "dnn_superres"):
+        raise RuntimeError("ESPCN preview needs OpenCV contrib (dnn_superres). Install opencv-contrib-python.")
+    model = cv2.dnn_superres.DnnSuperResImpl.create()
+    model.readModel(str(ESPCN_MODEL))
+    model.setModel("espcn", 2)
+    return model
+
+
+@st.cache_data(show_spinner=False, max_entries=2)
+def upscale_espcn(image_bytes: bytes, width: int, height: int) -> Image.Image:
+    """Return an RGB x2 ESPCN image, caching the result across ordinary reruns."""
+    import numpy as np
+
+    rgb = np.frombuffer(image_bytes, dtype=np.uint8).reshape(height, width, 3)
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    upscaled_bgr = load_espcn().upsample(bgr)
+    upscaled_rgb = cv2.cvtColor(upscaled_bgr, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(upscaled_rgb)
 
 
 def b64_jpeg(image: Image.Image, quality: int = 82) -> str:
@@ -466,16 +487,14 @@ def sidebar() -> dict:
         for key, spec in MODELS.items():
             ok, why = model_status(spec)
             label = f"{spec.icon} {spec.title}  ·  mAP {spec.map}"
-            on = st.toggle(label, value=ok, key=f"use_{key}", disabled=not ok and spec.kind == "rodla", help=why or spec.blurb)
+            on = st.toggle(label, value=ok, key=f"use_{key}", disabled=not ok, help=why or spec.blurb)
             if on and ok:
                 chosen.append(key)
-            if not ok and spec.kind != "rodla":
+            if not ok:
                 if st.button(f"⬇ Download {spec.title} weights", key=f"dl_{key}"):
                     download_weights(spec)
                     st.session_state["_enable_after_download"] = key  # applied before the toggle is drawn on the rerun
                     st.rerun()
-            if not ok and spec.kind == "rodla":
-                st.caption(f"⚠️ {why}")
         st.divider()
         st.markdown("##### 🌐 Region names")
         st.selectbox("Language", list(LANGS), format_func=lambda k: LANGS[k], key="lang",
@@ -574,7 +593,7 @@ def analyse(image: Image.Image, cfg: dict, lang: str) -> None:
             results["fusion"] = r
 
     st.session_state["result"] = results
-    st.session_state["shown_img"] = image  # full-resolution page for the final SVG / PNG
+    st.session_state["shown_img"] = image.copy()  # original full-resolution page for exports and crop previews
 
 
 def title_of(key: str) -> str:
@@ -605,11 +624,46 @@ def summary(image_name: str, lang: str) -> None:
 
     keys = list(results)
     tabs = st.tabs([f"{FUSION.icon if k == 'fusion' else MODELS[k].icon} {title_of(k)}" for k in keys])
+    context = st.session_state.get("sig")
+    context_key = hashlib.sha1(repr(context).encode("utf-8")).hexdigest()[:12]
     for tab, key in zip(tabs, keys):
         r = results[key]
         with tab:
             st.iframe(overlay_doc(page, r["dets"], lang), height="content")
             st.html(legend_html(lang, {d["label"] for d in r["dets"]}))
+
+            dets = r["dets"]
+            if dets:
+                st.markdown("#### Preview a detected region")
+                selected = st.selectbox(
+                    "Detection",
+                    options=list(range(len(dets))),
+                    format_func=lambda i, ds=dets: (
+                        f"#{i + 1} {tr(lang, ds[i]['label'])} · {ds[i]['conf']:.2f} · "
+                        f"[{', '.join(f'{v:.1f}' for v in ds[i]['box'])}]"
+                    ),
+                    key=f"crop_select_{context_key}_{key}",
+                    label_visibility="collapsed",
+                )
+                det = dets[selected]
+                bounds = crop_bounds(page, det["box"])
+                st.caption(
+                    f"Detection #{selected + 1} · {det['label']} · confidence {det['conf']:.3f} · "
+                    f"original-image box [{', '.join(f'{v:.1f}' for v in det['box'])}] px"
+                )
+                crop_cache = st.session_state.setdefault("crop_preview_cache", {})
+                cached = crop_cache.get(key)
+                if cached is None or cached[0] != (context, selected):
+                    crop_cache[key] = ((context, selected), page.crop(bounds) if bounds else None)
+                crop = crop_cache[key][1]
+                if crop is None:
+                    st.info("This detection has an invalid or empty box, so there is no crop to display.")
+                else:
+                    st.image(crop, caption=f"Original page crop · x={bounds[0]}–{bounds[2]}, y={bounds[1]}–{bounds[3]} px", #type: ignore
+                             width="stretch")
+            else:
+                st.info("This model did not detect any regions to preview.")
+
             buf = io.BytesIO()
             annotate_png(page, r["dets"]).save(buf, "PNG")
             c1, c2 = st.columns(2)
@@ -627,7 +681,7 @@ def main() -> None:
         st.session_state.setdefault(k, v)
     st.html(CSS)
     st.html('<div class="hero"><h1>IndicDLP Live Layout Studio</h1>'
-            '<p>Drop in a document page and watch YOLOv10x, DocLayout-YOLO and RoDLA read its layout, region by region, in 12 languages.</p></div>')
+            '<p>Drop in a document page and watch YOLOv10x and DocLayout-YOLO read its layout, region by region, in 12 languages.</p></div>')
     cfg = sidebar()
     lang = st.session_state["lang"]
 
@@ -652,15 +706,24 @@ def main() -> None:
             st.warning("No sample images found.")
 
     if image is None:
-        st.info("⬆️ Upload a page (or pick a sample) to begin.")
+        st.info("Upload a page (or pick a sample) to begin.")
         return
     if not cfg["models"]:
         st.warning("Enable at least one model in the sidebar.")
         return
 
-    preview, _ = fit(image, 700)
+    try:
+        with st.spinner("Upscaling preview with ESPCN x2…"):
+            upscaled = upscale_espcn(image.tobytes(), image.width, image.height)
+        preview = upscaled
+        preview_caption = (f"{name} · ESPCN x2 · {image.width}×{image.height} → "
+                           f"{upscaled.width}×{upscaled.height}px")
+    except Exception as exc:
+        st.warning(f"Could not upscale the preview with ESPCN: {exc}")
+        preview, _ = fit(image, 700)
+        preview_caption = f"{name} · original preview · {image.width}×{image.height}px"
     c1, c2 = st.columns([1, 1.2], gap="large")
-    c1.image(preview, caption=f"{name} · {image.width}×{image.height}px", width="stretch")
+    c1.image(preview, caption=preview_caption, width="stretch")
     with c2:
         st.markdown("#### Ready to analyse")
         st.write(f"**Models:** {', '.join(MODELS[k].title for k in cfg['models'])}"
@@ -669,13 +732,19 @@ def main() -> None:
                  + (" · **multi-scale**" if cfg["boost"] else ""))
         go = st.button("🚀 Scan & detect", type="primary", width="stretch")
 
-    sig = (name, image.size, tuple(cfg["models"]), cfg["conf"], cfg["iou"], cfg["imgsz"], cfg["boost"], cfg["fuse"])
+    sig = (src, name, image.size, image_fingerprint(image), tuple(cfg["models"]), cfg["conf"], cfg["iou"],
+           cfg["imgsz"], cfg["boost"], cfg["fuse"])
+    if st.session_state.get("sig") != sig:
+        st.session_state["result"] = None
+        st.session_state.pop("shown_img", None)
+        st.session_state.pop("sig", None)
+        st.session_state.pop("crop_preview_cache", None)
     if go:
         st.session_state["result"] = None
         st.session_state["sig"] = sig
+        st.session_state.pop("crop_preview_cache", None)
         st.divider()
         analyse(image, cfg, lang)
-        st.balloons()
     if st.session_state.get("sig") == sig:
         summary(name, lang)
 
