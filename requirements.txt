@@ -9,6 +9,8 @@ huggingface_hub          # imported by doclayout-yolo
 pillow>=10
 numpy
 opencv-contrib-python
+google-genai
+python-dotenv
 
 # PyTorch is NOT listed on purpose: install the build that matches your hardware first, see README.md.
 #   NVIDIA GPU (CUDA 12.8):  pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128

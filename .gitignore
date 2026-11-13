@@ -11,6 +11,7 @@ weights/
 *.so
 *.o
 *.whl
+.env
 
 # Claude Code local settings
 .claude/settings.local.json
